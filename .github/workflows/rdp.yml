@@ -9,103 +9,129 @@ jobs:
     timeout-minutes: 3600
 
     steps:
-      - name: Configure Core RDP Settings
+      - name: Enable RDP + Set Administrator Password + Speed Optimization
         run: |
+          # ── Enable RDP ──
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' `
-                             -Name "fDenyTSConnections" -Value 0 -Force
+                           -Name "fDenyTSConnections" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "UserAuthentication" -Value 0 -Force
+                           -Name "UserAuthentication" -Value 0 -Force
           Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
-                             -Name "SecurityLayer" -Value 0 -Force
+                           -Name "SecurityLayer" -Value 0 -Force
 
-          netsh advfirewall firewall delete rule name="RDP-bore"
-          netsh advfirewall firewall add rule name="RDP-bore" `
-            dir=in action=allow protocol=TCP localport=3389
+          # ── Set Administrator password to 12345 ──
+          net user Administrator 12345
+          net user Administrator /active:yes
+
+          # ── Firewall ──
+          netsh advfirewall firewall delete rule name="RDP-bore" 2>$null
+          netsh advfirewall firewall add rule name="RDP-bore" dir=in action=allow protocol=TCP localport=3389
+
+          # ── RDP Speed Optimizations ──
+          # Color depth 16-bit (faster on slow connections)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                           -Name "ColorDepth" -Value 4 -Force
+          # Max connections
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                           -Name "MaxConnectionTime" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                           -Name "MaxDisconnectionTime" -Value 0 -Force
+
+          # Disable visual effects for max speed
+          $regPath = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\VisualEffects'
+          if (-not (Test-Path $regPath)) { New-Item -Path $regPath -Force | Out-Null }
+          Set-ItemProperty -Path $regPath -Name "VisualFXSetting" -Value 2 -Force
+
+          # Disable wallpaper over RDP
+          Set-ItemProperty -Path 'HKLM:\Software\Policies\Microsoft\Windows NT\Terminal Services' `
+                           -Name "fNoDesktop" -Value 0 -Force -ErrorAction SilentlyContinue
+
+          # Enable compression
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                           -Name "CompressedData" -Value 1 -Force
+
+          # Enable UDP transport (reduces latency)
+          $udpPath = 'HKLM:\SOFTWARE\Policies\Microsoft\Windows NT\Terminal Services\Client'
+          if (-not (Test-Path $udpPath)) { New-Item -Path $udpPath -Force | Out-Null }
+          Set-ItemProperty -Path $udpPath -Name "fClientDisableUDP" -Value 0 -Force
+
+          # Disable font smoothing and desktop composition
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                           -Name "AllowFontSmoothing" -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                           -Name "fEnableDesktopComposition" -Value 0 -Force
+
+          # Network auto-detect (adapts to bandwidth)
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' `
+                           -Name "NetworkAutoDetect" -Value 1 -Force
 
           Restart-Service -Name TermService -Force
+          Write-Host "✅ RDP configured and optimized"
 
-      - name: Create RDP User with Secure Password
+      - name: Install Google Chrome (fast)
         run: |
-          $charSet = @{
-              Upper   = [char[]](65..90)
-              Lower   = [char[]](97..122)
-              Number  = [char[]](48..57)
-          }
-          $rawPassword = @()
-          $rawPassword += $charSet.Upper | Get-Random -Count 4
-          $rawPassword += $charSet.Lower | Get-Random -Count 4
-          $rawPassword += $charSet.Number | Get-Random -Count 4
-          $password = -join ($rawPassword | Sort-Object { Get-Random })
-
-          $securePass = ConvertTo-SecureString $password -AsPlainText -Force
-          New-LocalUser -Name "RDP" -Password $securePass -AccountNeverExpires
-          Add-LocalGroupMember -Group "Administrators" -Member "RDP"
-          Add-LocalGroupMember -Group "Remote Desktop Users" -Member "RDP"
-
-          Write-Host "========================================="
-          Write-Host "  RDP Username : RDP"
-          Write-Host "  RDP Password : $password"
-          Write-Host "========================================="
-
-          echo "RDP_PASSWORD=$password" >> $env:GITHUB_ENV
+          $installer = "$env:TEMP\chrome.msi"
+          Invoke-WebRequest -Uri "https://dl.google.com/chrome/install/googlechromestandaloneenterprise64.msi" `
+                            -OutFile $installer -UseBasicParsing
+          Start-Process msiexec.exe -ArgumentList "/i `"$installer`" /quiet /norestart" -Wait
+          Remove-Item $installer -Force -ErrorAction SilentlyContinue
+          Write-Host "✅ Chrome installed"
 
       - name: Download and Run bore
         run: |
-          # Download latest bore Windows binary
-          $boreUrl = "https://github.com/ekzhang/bore/releases/latest/download/bore-v0.5.0-x86_64-pc-windows-msvc.zip"
-          $zipPath = "$env:TEMP\bore.zip"
+          $boreZip = "$env:TEMP\bore.zip"
           $boreDir = "$env:TEMP\bore"
 
-          Invoke-WebRequest -Uri $boreUrl -OutFile $zipPath
-          Expand-Archive -Path $zipPath -DestinationPath $boreDir -Force
+          Invoke-WebRequest -Uri "https://github.com/ekzhang/bore/releases/latest/download/bore-v0.5.0-x86_64-pc-windows-msvc.zip" `
+                            -OutFile $boreZip -UseBasicParsing
+          Expand-Archive -Path $boreZip -DestinationPath $boreDir -Force
 
-          $boreBin = Get-ChildItem -Path $boreDir -Filter "bore.exe" -Recurse | Select-Object -First 1 -ExpandProperty FullName
+          $boreBin = (Get-ChildItem -Path $boreDir -Filter "bore.exe" -Recurse | Select-Object -First 1).FullName
+          $logFile = "$env:TEMP\bore.log"
 
-          # Start bore in background and capture output to get the assigned port
-          $logFile = "$env:TEMP\bore_output.txt"
           Start-Process -FilePath $boreBin `
-            -ArgumentList "local", "3389", "--to", "bore.pub" `
+            -ArgumentList "local 3389 --to bore.pub" `
             -RedirectStandardOutput $logFile `
             -NoNewWindow
 
-          # Wait for bore to assign a port (up to 30 seconds)
+          # Wait for bore port
           $borePort = $null
-          $retries = 0
-          while (-not $borePort -and $retries -lt 30) {
+          for ($i = 0; $i -lt 30; $i++) {
               Start-Sleep -Seconds 1
-              $retries++
               if (Test-Path $logFile) {
                   $content = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
-                  if ($content -match 'bore.pub:(\d+)') {
+                  if ($content -match 'bore\.pub:(\d+)') {
                       $borePort = $matches[1]
+                      break
                   }
               }
           }
 
           if (-not $borePort) {
-              Write-Error "bore failed to start or get a port"
+              Write-Error "❌ bore failed to get a port"
+              Get-Content $logFile -ErrorAction SilentlyContinue
               exit 1
           }
 
-          Write-Host "========================================="
-          Write-Host "  RDP Address  : bore.pub:$borePort"
-          Write-Host "  RDP Username : RDP"
-          Write-Host "  RDP Password : $env:RDP_PASSWORD"
-          Write-Host "========================================="
-
           echo "BORE_PORT=$borePort" >> $env:GITHUB_ENV
+
+          Write-Host ""
+          Write-Host "================================================"
+          Write-Host "  ✅ RDP READY"
+          Write-Host "  Address  : bore.pub:$borePort"
+          Write-Host "  Username : Administrator"
+          Write-Host "  Password : 12345"
+          Write-Host "================================================"
 
       - name: Keep Session Alive
         run: |
           Write-Host ""
-          Write-Host "========================================="
-          Write-Host "  Connect via Remote Desktop:"
+          Write-Host "================================================"
           Write-Host "  Address  : bore.pub:$env:BORE_PORT"
-          Write-Host "  Username : RDP"
-          Write-Host "  Password : $env:RDP_PASSWORD"
-          Write-Host "========================================="
-
+          Write-Host "  Username : Administrator"
+          Write-Host "  Password : 12345"
+          Write-Host "================================================"
           while ($true) {
-              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Session active — bore.pub:$env:BORE_PORT"
+              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Active — bore.pub:$env:BORE_PORT"
               Start-Sleep -Seconds 60
           }
