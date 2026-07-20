@@ -6,26 +6,25 @@ on:
 jobs:
   secure-rdp:
     runs-on: windows-latest
-    timeout-minutes: 3600
+    timeout-minutes: 360
 
     steps:
       - name: Enable RDP and Optimize Speed
         shell: pwsh
         run: |
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name "fDenyTSConnections" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "UserAuthentication" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "SecurityLayer" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "ColorDepth" -Value 4 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "CompressedData" -Value 1 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "AllowFontSmoothing" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "fEnableDesktopComposition" -Value 0 -Force
-          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name "NetworkAutoDetect" -Value 1 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server' -Name fDenyTSConnections -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name UserAuthentication -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name SecurityLayer -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name ColorDepth -Value 4 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name CompressedData -Value 1 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name AllowFontSmoothing -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name fEnableDesktopComposition -Value 0 -Force
+          Set-ItemProperty -Path 'HKLM:\System\CurrentControlSet\Control\Terminal Server\WinStations\RDP-Tcp' -Name NetworkAutoDetect -Value 1 -Force
           net user Administrator 12345
           net user Administrator /active:yes
-          netsh advfirewall firewall delete rule name="RDP-bore" 2>$null
-          netsh advfirewall firewall add rule name="RDP-bore" dir=in action=allow protocol=TCP localport=3389
+          netsh advfirewall firewall delete rule name=RDP-bore
+          netsh advfirewall firewall add rule name=RDP-bore dir=in action=allow protocol=TCP localport=3389
           Restart-Service -Name TermService -Force
-          Write-Host "RDP enabled - password set to 12345"
 
       - name: Install Google Chrome
         shell: pwsh
@@ -34,66 +33,35 @@ jobs:
           Invoke-WebRequest -Uri "https://dl.google.com/chrome/install/googlechromestandaloneenterprise64.msi" -OutFile $installer -UseBasicParsing
           Start-Process msiexec.exe -ArgumentList "/i", $installer, "/quiet", "/norestart" -Wait
           Remove-Item $installer -Force -ErrorAction SilentlyContinue
-          Write-Host "Chrome installed"
 
-      - name: Download and Run bore + Notify Telegram
+      - name: Run bore and Notify Telegram
         shell: pwsh
         run: |
           $boreZip = "$env:TEMP\bore.zip"
           $boreDir = "$env:TEMP\bore"
-          $boreUrl = "https://github.com/ekzhang/bore/releases/download/v0.6.0/bore-v0.6.0-x86_64-pc-windows-msvc.zip"
-
-          Invoke-WebRequest -Uri $boreUrl -OutFile $boreZip -UseBasicParsing
+          Invoke-WebRequest -Uri "https://github.com/ekzhang/bore/releases/download/v0.6.0/bore-v0.6.0-x86_64-pc-windows-msvc.zip" -OutFile $boreZip -UseBasicParsing
           Expand-Archive -Path $boreZip -DestinationPath $boreDir -Force
-
-          $boreBin = (Get-ChildItem -Path $boreDir -Filter "bore.exe" -Recurse | Select-Object -First 1).FullName
-          $logFile = "$env:TEMP\bore.log"
-
-          Start-Process -FilePath $boreBin -ArgumentList "local", "3389", "--to", "bore.pub" -RedirectStandardOutput $logFile -NoNewWindow
-
+          $boreBin = (Get-ChildItem -Path $boreDir -Filter bore.exe -Recurse | Select-Object -First 1).FullName
+          $logFile  = "$env:TEMP\bore.log"
+          Start-Process -FilePath $boreBin -ArgumentList "local","3389","--to","bore.pub" -RedirectStandardOutput $logFile -NoNewWindow
           $borePort = $null
           for ($i = 0; $i -lt 30; $i++) {
               Start-Sleep -Seconds 2
               if (Test-Path $logFile) {
-                  $content = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
-                  if ($content -match 'bore\.pub:(\d+)') {
-                      $borePort = $matches[1]
-                      break
-                  }
+                  $c = Get-Content $logFile -Raw -ErrorAction SilentlyContinue
+                  if ($c -match 'bore\.pub:(\d+)') { $borePort = $Matches[1]; break }
               }
           }
-
-          if (-not $borePort) {
-              Write-Error "bore failed - no port assigned"
-              Get-Content $logFile -ErrorAction SilentlyContinue
-              exit 1
-          }
-
+          if (-not $borePort) { Get-Content $logFile -ErrorAction SilentlyContinue; exit 1 }
           echo "BORE_PORT=$borePort" >> $env:GITHUB_ENV
-
-          Write-Host "================================"
-          Write-Host "  Address  : bore.pub:$borePort"
-          Write-Host "  Username : Administrator"
-          Write-Host "  Password : 12345"
-          Write-Host "================================"
-
-          # Send to Telegram
-          $tgToken  = "8439446538:AAE7qOmKwdw93kK7R9n4P2T21V7z2KcF-YI"
-          $tgChatId = "5653032481"
-          $msg = "RDP جاهز%0A%0AAddress  : bore.pub:$borePort%0AUsername : Administrator%0APassword : 12345"
-          $tgUrl = "https://api.telegram.org/bot$tgToken/sendMessage?chat_id=$tgChatId&text=$msg"
-          Invoke-WebRequest -Uri $tgUrl -UseBasicParsing | Out-Null
-          Write-Host "Telegram notification sent"
+          $msg = "RDP Ready%0AAddress: bore.pub:${borePort}%0AUser: Administrator%0APass: 12345"
+          Invoke-WebRequest -Uri "https://api.telegram.org/bot8439446538:AAE7qOmKwdw93kK7R9n4P2T21V7z2KcF-YI/sendMessage?chat_id=5653032481&text=$msg" -UseBasicParsing | Out-Null
+          Write-Host "Sent to Telegram - bore.pub:$borePort"
 
       - name: Keep Session Alive
         shell: pwsh
         run: |
-          Write-Host "================================"
-          Write-Host "  Address  : bore.pub:$env:BORE_PORT"
-          Write-Host "  Username : Administrator"
-          Write-Host "  Password : 12345"
-          Write-Host "================================"
           while ($true) {
-              Write-Host "[$(Get-Date -Format 'HH:mm:ss')] Active - bore.pub:$env:BORE_PORT"
+              Write-Host "[active] bore.pub:$env:BORE_PORT | User: Administrator | Pass: 12345"
               Start-Sleep -Seconds 60
           }
